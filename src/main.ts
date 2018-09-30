@@ -14,6 +14,7 @@ const SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly'];
 const TOKEN_PATH = 'token.json';
 
 let mainWindow: Electron.BrowserWindow;
+let oAuth2Client: OAuth2Client;
 
 function createWindow() {
   // Create the browser window.
@@ -94,7 +95,7 @@ app.on('activate', () => {
  */
 function authorize(credentials: any, callback?: Function) {
   const { client_secret, client_id, redirect_uris } = credentials.installed;
-  const oAuth2Client = new google.auth.OAuth2(
+  oAuth2Client = new google.auth.OAuth2(
     client_id,
     client_secret,
     redirect_uris[0]
@@ -176,6 +177,68 @@ function startWatcher(path: string) {
       isReady = true;
     })
     .on('add', filePath => {
-      if (isReady) console.log(filePath);
+      if (isReady) {
+        console.log(filePath);
+        onLocalFileAdded(filePath);
+      }
     });
+}
+
+async function addFileToGDrive(filePath: string) {
+  const fileInfoFields =
+    'id, name, mimeType, md5Checksum, size, modifiedTime, parents, trashed';
+  /* Create local file info */
+  let info = {
+    //id: uuid(),
+    name: path.basename(filePath),
+    //md5Checksum: await md5file(src),
+    parents: [await this.getParent(filePath)]
+    //mimeType: "image/jpeg
+  };
+
+  let addRemotely = () =>
+    new Promise((resolve, reject) => {
+      console.log('Adding new file to remote drive.');
+      const fileName = path.basename(filePath);
+
+      var fileMetadata = {
+        name: fileName
+      };
+
+      var media = {
+        mimeType: 'image/jpeg',
+        body: fs.createReadStream(filePath)
+      };
+
+      const drive = google.drive({ version: 'v3', auth: oAuth2Client });
+      drive.files.create({
+        resource: fileMetadata,
+        media: media,
+        fields: 'id'
+      });
+      // drive.files(
+      //   {
+      //     resource: info,
+      //     media: {
+      //       body: fs.createReadStream(filePath)
+      //     },
+      //     fields: fileInfoFields
+      //   },
+      //   (err, result) => {
+      //     if (err) {
+      //       error(err);
+      //       return reject(err);
+      //     }
+      //     verbose('Result', result);
+      //     resolve(result);
+      //   }
+      // );
+    });
+
+  let result = await this.tryTwice(addRemotely);
+
+  this.logChange('added', true);
+
+  await this.storeFileInfo(result);
+  await this.save();
 }
