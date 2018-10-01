@@ -1,16 +1,18 @@
 // clipshare101:T&cVI0f$14K7WQ*n$n07
-import * as chokidar from 'chokidar';
-import { app, BrowserWindow, dialog } from 'electron';
-import * as fs from 'fs';
-import { OAuth2Client } from 'google-auth-library';
-import { google } from 'googleapis';
-import * as path from 'path';
-import { URL } from 'url';
+import * as chokidar from "chokidar";
+import { app, BrowserWindow, dialog } from "electron";
+import * as fs from "fs";
+import { OAuth2Client } from "google-auth-library";
+import { google } from "googleapis";
+import * as mimeTypes from "mime-types";
+import * as path from "path";
+import * as request from "request";
+import { URL } from "url";
 
 // If modifying these scopes, delete token.json.
 
 // If modifying these scopes, delete token.json.
-const SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly'];
+const SCOPES = ['https://www.googleapis.com/auth/drive'];
 const TOKEN_PATH = 'token.json';
 
 let mainWindow: Electron.BrowserWindow;
@@ -48,7 +50,24 @@ function createWindow() {
       const approvalCode = parsed.searchParams.get('approvalCode');
       console.log(approvalCode);
       // mainWindow.close();
-      // Main Logic Here
+
+      oAuth2Client.getToken(approvalCode, (err: any, token: any) => {
+        if (err) {
+          return console.error('Error retrieving access token', err);
+        }
+        if (token) {
+          oAuth2Client.setCredentials(token);
+          console.log('oAuth set credentials with token: ', token);
+        }
+        // Store the token to disk for later program executions
+        fs.writeFile(TOKEN_PATH, JSON.stringify(token), err => {
+          if (err) {
+            console.error(err);
+          }
+          console.log('Token stored to', TOKEN_PATH);
+        });
+      });
+
       openDirectoryDialog();
     }
   });
@@ -107,6 +126,7 @@ function authorize(credentials: any, callback?: Function) {
       return getAccessToken(oAuth2Client, callback);
     }
     oAuth2Client.setCredentials(JSON.parse(token.toString()));
+    openDirectoryDialog();
     if (callback) {
       callback(oAuth2Client);
     }
@@ -125,30 +145,7 @@ function getAccessToken(oAuth2Client: OAuth2Client, callback: Function) {
     scope: SCOPES
   });
   mainWindow.loadURL(authUrl);
-  // console.log('Authorize this app by visiting this url:', authUrl);
-  // const rl = readline.createInterface({
-  //   input: process.stdin,
-  //   output: process.stdout
-  // });
-  // rl.question('Enter the code from that page here: ', code => {
-  //   rl.close();
-  //   oAuth2Client.getToken(code, (err: any, token: any) => {
-  //     if (err) {
-  //       return console.error('Error retrieving access token', err);
-  //     }
-  //     if (token) {
-  //       oAuth2Client.setCredentials(token);
-  //     }
-  //     // Store the token to disk for later program executions
-  //     fs.writeFile(TOKEN_PATH, JSON.stringify(token), err => {
-  //       if (err) {
-  //         console.error(err);
-  //       }
-  //       console.log('Token stored to', TOKEN_PATH);
-  //     });
-  //     callback(oAuth2Client);
-  //   });
-  // });
+  console.log('Loading auth URL: ', authUrl);
 }
 
 function openDirectoryDialog() {
@@ -179,66 +176,59 @@ function startWatcher(path: string) {
     .on('add', filePath => {
       if (isReady) {
         console.log(filePath);
-        onLocalFileAdded(filePath);
+        addFileToGDrive(filePath);
       }
     });
 }
 
 async function addFileToGDrive(filePath: string) {
-  const fileInfoFields =
-    'id, name, mimeType, md5Checksum, size, modifiedTime, parents, trashed';
-  /* Create local file info */
-  let info = {
-    //id: uuid(),
-    name: path.basename(filePath),
-    //md5Checksum: await md5file(src),
-    parents: [await this.getParent(filePath)]
-    //mimeType: "image/jpeg
-  };
+  console.log('Adding new file to remote drive.');
+  const fileName = path.basename(filePath);
+  // empty mimeType in case type is unknown 
+  const mimeType = mimeTypes.lookup(filePath) || '';
+  console.log('mimeType: ', mimeType);
+  if (!mimeType.includes('image')) {
+    // uploading only screenshots
+    return;
+  }
 
-  let addRemotely = () =>
-    new Promise((resolve, reject) => {
-      console.log('Adding new file to remote drive.');
-      const fileName = path.basename(filePath);
+  const drive = google.drive({ version: 'v3', auth: oAuth2Client });
 
-      var fileMetadata = {
-        name: fileName
-      };
+  drive.files.create({
+    requestBody: {
+      name: fileName,
+      mimeType: mimeType
+    }, media: {
+      mediaType: mimeType,
+      body: fs.createReadStream(filePath)
+    }
+  }, (err, axiosResponse) => {
+    if (err) {
+      console.log(err);
+    } else {
+      console.log('File id:', axiosResponse.data);
+      const fileId = axiosResponse.data.id;
+      // create reader permissions to anyone
+      drive.permissions.create({
+        fileId: fileId,
+        requestBody: {
+          role: "reader",
+          type: "anyone",
+          allowFileDiscovery: true
+        }
+      }, function (err, result) {
+        if (err) {
+          console.log(err)
+        } else {
+          const filePublicUrl = 'https://drive.google.com/uc?export=view&id=' + fileId;
+          console.log('public url: ', filePublicUrl);
 
-      var media = {
-        mimeType: 'image/jpeg',
-        body: fs.createReadStream(filePath)
-      };
-
-      const drive = google.drive({ version: 'v3', auth: oAuth2Client });
-      drive.files.create({
-        resource: fileMetadata,
-        media: media,
-        fields: 'id'
+          request({ url: filePublicUrl, followRedirect: false }, function (err, res, body) {
+            console.log('direct public URL: ', res.headers.location);
+          });
+        }
       });
-      // drive.files(
-      //   {
-      //     resource: info,
-      //     media: {
-      //       body: fs.createReadStream(filePath)
-      //     },
-      //     fields: fileInfoFields
-      //   },
-      //   (err, result) => {
-      //     if (err) {
-      //       error(err);
-      //       return reject(err);
-      //     }
-      //     verbose('Result', result);
-      //     resolve(result);
-      //   }
-      // );
-    });
+    }
+  });
 
-  let result = await this.tryTwice(addRemotely);
-
-  this.logChange('added', true);
-
-  await this.storeFileInfo(result);
-  await this.save();
 }
